@@ -1,0 +1,44 @@
+# YOLOv12-nano 🚀 (depth=0.50, width=0.25)
+nc: 80  # number of classes
+scales:
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024]
+
+# --------------- Backbone ---------------
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv,       [64,   3, 2]]          # 0 → 64*0.25=16
+  - [-1, 1, Conv,       [128,  3, 2, 1, 2]]    # 1 → 128*0.25=32
+  - [-1, 2, C3k2,       [256,  False, 0.25]]   # 2 → 256*0.25=64
+  - [-1, 1, Conv,       [256,  3, 2, 1, 4]]    # 3 → 256*0.25=64
+  - [-1, 2, C3k2,       [512,  False, 0.25]]   # 4 → 512*0.25=128
+  - [-1, 1, Conv,       [512,  3, 2]]          # 5 → 512*0.25=128
+  # Custom FlashDFMA blocks – you must give them *already scaled* channels:
+  - [-1, 4, FlashDFMA,  [128,  128,  4, True, 4]]  # 6: in=128 → out=128, repeats=4, area=4
+  - [-1, 1, Conv,       [1024, 3, 2]]          # 7 → 1024*0.25=256
+  - [-1, 4, FlashDFMA,  [256,  256,  4, True, 1]]  # 8: in=256 → out=256, repeats=4, area=1
+
+# ---------------- Head ----------------
+head:
+  # P5 → upsample → P4 space
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat,      [1]]                 # cat 256 + 128 = 384
+  - [-1, 2, FlashDFMA,       [384, 128, 2, False, -1]]  # 11: in=384 → out=128
+
+  # P4 → upsample → P3 space
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat,      [1]]                 # cat 128 +  64 = 192
+  - [-1, 2, FlashDFMA,       [256,  512, 2, False, -1]]  # 14: in=192 → out=64
+
+  # P3 head → downsample → combine with P4
+  - [-1, 1, Conv,           [256,   3, 2]]         # downsample 64→64
+  - [[-1, 11], 1, Concat,   [1]]                  # cat 64 + 128 = 192
+  - [-1, 2, FlashDFMA,      [192, 448, 2, False, -1]]  # 17: in=192 → out=128
+
+  # P4 head → downsample → combine with P5
+  - [-1, 1, Conv,           [128,  3, 2]]         # downsample 128→128
+  - [[-1, 8],  1, Concat,   [1]]                  # cat 128 + 256 = 384
+  - [-1, 2, C3k2,           [384,  True]]         # 20: in=384 → out=384 (C3k2 with c3k=True)
+
+  # Final detection heads on P3, P4, P5
+  - [[14, 17, 20], 1, Detect, [nc]]
